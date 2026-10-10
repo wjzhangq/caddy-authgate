@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<title>登录</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--fg:#1f2328;--muted:#656d76;--border:#d0d7de;--accent:#0969da;--accent-fg:#fff;--err:#cf222e;--ok:#1a7f37;--input:#fff}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--card:#161b22;--fg:#e6edf3;--muted:#8d96a0;--border:#30363d;--accent:#2f81f7;--accent-fg:#fff;--err:#f85149;--ok:#3fb950;--input:#0d1117}}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{display:flex;align-items:center;justify-content:center;padding:16px;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.card{width:100%;max-width:380px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:28px 24px}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 20px;font-size:13px}
+label{display:block;font-size:13px;color:var(--muted);margin:0 0 6px}
+.row{display:flex;gap:8px;margin-bottom:16px}
+.field{flex:1;display:flex;align-items:center;min-width:0;border:1px solid var(--border);border-radius:8px;background:var(--input);overflow:hidden}
+.field:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent)}
+.field input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:var(--fg);font:inherit;padding:10px 12px}
+.suffix{padding:0 12px 0 0;color:var(--muted);white-space:nowrap}
+button{border:0;border-radius:8px;padding:10px 14px;font:inherit;cursor:pointer;background:var(--accent);color:var(--accent-fg);white-space:nowrap}
+button.secondary{background:transparent;color:var(--accent);border:1px solid var(--border)}
+button:disabled{opacity:.5;cursor:not-allowed}
+#login{width:100%}
+#msg{min-height:1.5em;font-size:13px;margin:4px 0 0}
+#msg.err{color:var(--err)}
+#msg.ok{color:var(--ok)}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<main class="card">
+  <h1>登录</h1>
+  <p class="sub">使用邮箱验证码登录</p>
+  <label for="user">用户名</label>
+  <div class="row">
+    <div class="field">
+      <input id="user" name="user" autocomplete="username" autocapitalize="off" spellcheck="false" autofocus required>
+      <span class="suffix" id="suffix"></span>
+    </div>
+    <button id="send" type="button" class="secondary">发送验证码</button>
+  </div>
+  <div id="codebox" class="hidden">
+    <label for="code">验证码</label>
+    <div class="row">
+      <div class="field">
+        <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}">
+      </div>
+    </div>
+    <button id="login" type="button" disabled>登录</button>
+  </div>
+  <p id="msg" role="status" aria-live="polite"></p>
+</main>
+<script>
+(function () {
+  "use strict";
+  var DOMAIN = {{.Domain}};
+  var INTERVAL = {{.CodeInterval}};
+  var $ = function (id) { return document.getElementById(id); };
+  var userEl = $("user"), codeEl = $("code"), sendBtn = $("send"), loginBtn = $("login"), msg = $("msg");
+  var timer = null, sending = false, logging = false;
+
+  $("suffix").textContent = "@" + DOMAIN;
+
+  function show(text, kind) { msg.textContent = text; msg.className = kind || ""; }
+
+  function user() {
+    var v = userEl.value.trim().toLowerCase();
+    var sfx = "@" + DOMAIN;
+    if (v.length > sfx.length && v.slice(-sfx.length) === sfx) v = v.slice(0, -sfx.length);
+    return v;
+  }
+
+  userEl.addEventListener("input", function () {
+    var sfx = "@" + DOMAIN;
+    var v = userEl.value;
+    if (v.toLowerCase().slice(-sfx.length) === sfx) userEl.value = v.slice(0, -sfx.length);
+  });
+
+  function countdown(sec) {
+    clearInterval(timer);
+    var left = Math.max(1, Math.ceil(sec || INTERVAL));
+    sendBtn.disabled = true;
+    sendBtn.textContent = left + " 秒后重发";
+    timer = setInterval(function () {
+      left--;
+      if (left <= 0) { resetSend(); return; }
+      sendBtn.textContent = left + " 秒后重发";
+    }, 1000);
+  }
+
+  function resetSend() {
+    clearInterval(timer);
+    timer = null;
+    sendBtn.disabled = false;
+    sendBtn.textContent = "重新发送";
+  }
+
+  function post(path, data) {
+    var body = new URLSearchParams(data);
+    return fetch("/authgate/" + path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      body: body
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (j) { return { status: res.status, body: j }; });
+    });
+  }
+
+  function send() {
+    if (sending || sendBtn.disabled) return;
+    var u = user();
+    if (!u) { show("请输入用户名", "err"); userEl.focus(); return; }
+    sending = true;
+    sendBtn.disabled = true;
+    show("正在发送…");
+    post("code/send", { user: u }).then(function (r) {
+      var b = r.body || {};
+      if (r.status === 200) {
+        var minutes = Math.max(1, Math.round((b.expires_in || 300) / 60));
+        show("验证码已发送至 " + (b.email || (u + "@" + DOMAIN)) + "，" + minutes + " 分钟内有效", "ok");
+        $("codebox").classList.remove("hidden");
+        codeEl.value = "";
+        updateLogin();
+        codeEl.focus();
+        countdown(b.resend_after);
+      } else if (r.status === 429) {
+        show(b.message || "发送过于频繁，请稍后再试", "err");
+        countdown(b.retry_after);
+      } else {
+        if (r.status === 404) show("用户不存在，请联系管理员添加", "err");
+        else if (r.status === 502) show("验证码发送失败，请稍后重试", "err");
+        else show(b.message || "发送失败（" + r.status + "）", "err");
+        resetSend();
+        sendBtn.textContent = "发送验证码";
+      }
+    }).catch(function () {
+      show("网络错误，请稍后重试", "err");
+      resetSend();
+    }).then(function () { sending = false; });
+  }
+
+  function updateLogin() {
+    codeEl.value = codeEl.value.replace(/\D/g, "").slice(0, 6);
+    loginBtn.disabled = logging || codeEl.value.length !== 6;
+  }
+
+  function login() {
+    updateLogin();
+    if (loginBtn.disabled) return;
+    logging = true;
+    loginBtn.disabled = true;
+    show("正在登录…");
+    post("code/valid", { user: user(), code: codeEl.value }).then(function (r) {
+      var b = r.body || {};
+      if (r.status === 200) {
+        show("登录成功，正在跳转…", "ok");
+        location.reload();
+        return;
+      }
+      if (r.status === 400 && b.error === "invalid_code") {
+        show("验证码错误，还可尝试 " + b.remaining_attempts + " 次", "err");
+        codeEl.select();
+      } else if (r.status === 410 || r.status === 429) {
+        show(b.message || "验证码已失效，请重新获取", "err");
+        codeEl.value = "";
+        if (b.retry_after) countdown(b.retry_after); else resetSend();
+      } else {
+        show(b.message || "登录失败（" + r.status + "）", "err");
+      }
+    }).catch(function () {
+      show("网络错误，请稍后重试", "err");
+    }).then(function () { logging = false; updateLogin(); });
+  }
+
+  sendBtn.addEventListener("click", send);
+  loginBtn.addEventListener("click", login);
+  userEl.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); send(); } });
+  codeEl.addEventListener("input", updateLogin);
+  codeEl.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); login(); } });
+})();
+</script>
+</body>
+</html>

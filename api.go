@@ -13,7 +13,9 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/wjzhangq/caddy-authgate/internal/code"
 	"github.com/wjzhangq/caddy-authgate/internal/keygen"
+	"github.com/wjzhangq/caddy-authgate/internal/ratelimit"
 	"github.com/wjzhangq/caddy-authgate/internal/store"
 )
 
@@ -45,6 +47,9 @@ var endpoints = map[string]endpoint{
 	"key/add":     {authUser, true, getPost, (*Handler).apiKeyAdd},
 	"key/delete":  {authUser, true, getPost, (*Handler).apiKeyDelete},
 	"me":          {authUser, false, getPost, (*Handler).apiMe},
+	"code/send":   {authNone, false, []string{http.MethodPost}, (*Handler).apiCodeSend},
+	"code/valid":  {authNone, false, []string{http.MethodPost}, (*Handler).apiCodeValid},
+	"logout":      {authNone, false, getPost, (*Handler).apiLogout},
 }
 
 // apiCtx 是单次接口调用的上下文。
@@ -286,4 +291,120 @@ func (h *Handler) apiMe(w http.ResponseWriter, r *http.Request, c *apiCtx) error
 	return writeJSON(w, http.StatusOK, map[string]any{
 		"user": c.id.user, "is_admin": c.id.admin, "method": c.id.method, "expires_at": exp,
 	})
+}
+
+// rateLimited 按 IP 限流，被限流时输出 429 并返回 true。
+func (h *Handler) rateLimited(w http.ResponseWriter, bucket string, c *apiCtx) (bool, error) {
+	if ok, wait := h.core.limiter.Allow(bucket, c.ip); !ok {
+		return true, writeError(w, http.StatusTooManyRequests, errRateLimited, map[string]any{"retry_after": seconds(wait)})
+	}
+	return false, nil
+}
+
+// code/send?user=
+func (h *Handler) apiCodeSend(w http.ResponseWriter, r *http.Request, c *apiCtx) error {
+	if limited, err := h.rateLimited(w, ratelimit.CodeSend, c); limited {
+		return err
+	}
+	user, ok := h.userParam(c)
+	if !ok {
+		return writeError(w, http.StatusBadRequest, errInvalidParam, nil)
+	}
+	core := h.core
+	cfg := core.Config()
+	if !core.users.Exists(user) {
+		h.logger.Warn("authgate: code send rejected", zap.String("user", user), zap.String("ip", c.ip), zap.String("reason", "user_not_found"))
+		return writeError(w, http.StatusNotFound, errUserNotFound, nil)
+	}
+	now := time.Now()
+	cd, wait, err := core.codes.Issue(user, now)
+	if errors.Is(err, code.ErrTooFrequent) {
+		return writeError(w, http.StatusTooManyRequests, errTooFrequent, map[string]any{"retry_after": seconds(wait)})
+	}
+	if err != nil {
+		return err
+	}
+	email := user + "@" + cfg.Domain
+	ttl := core.codes.TTL()
+	status, err := core.mailer.Load().Send(r.Context(), email, cd, ttl)
+	if err != nil {
+		h.logger.Warn("authgate: code send failed", zap.String("user", user), zap.String("ip", c.ip),
+			zap.Int("upstream_status", status), zap.Error(err))
+		return writeError(w, http.StatusBadGateway, errSendFailed, map[string]any{"upstream_status": status})
+	}
+	core.codes.Commit(user, cd, now)
+	h.logger.Info("authgate: code sent", zap.String("user", user), zap.String("ip", c.ip), zap.Int("upstream_status", status))
+	return writeJSON(w, http.StatusOK, map[string]any{
+		"user":         user,
+		"email":        email,
+		"expires_in":   seconds(ttl),
+		"resend_after": seconds(core.codes.Interval()),
+	})
+}
+
+// code/valid?user=&code=
+func (h *Handler) apiCodeValid(w http.ResponseWriter, r *http.Request, c *apiCtx) error {
+	if limited, err := h.rateLimited(w, ratelimit.CodeValid, c); limited {
+		return err
+	}
+	user, ok := h.userParam(c)
+	cd := strings.TrimSpace(c.params.Get("code"))
+	if !ok || cd == "" {
+		return writeError(w, http.StatusBadRequest, errInvalidParam, nil)
+	}
+	core := h.core
+	fail := func(reason string) {
+		h.logger.Warn("authgate: login failed", zap.String("user", user), zap.String("ip", c.ip),
+			zap.String("method", methodWeb), zap.String("reason", reason))
+	}
+	remaining, err := core.codes.Verify(user, cd, time.Now())
+	switch {
+	case errors.Is(err, code.ErrInvalid):
+		fail(errInvalidCode)
+		return writeError(w, http.StatusBadRequest, errInvalidCode, map[string]any{"remaining_attempts": remaining})
+	case errors.Is(err, code.ErrTooManyAttempts):
+		fail(errTooManyAttempts)
+		return writeError(w, http.StatusTooManyRequests, errTooManyAttempts, nil)
+	case err != nil:
+		fail(errCodeExpired)
+		return writeError(w, http.StatusGone, errCodeExpired, nil)
+	}
+	if !core.users.Exists(user) {
+		fail(errUserNotFound)
+		return writeError(w, http.StatusGone, errCodeExpired, nil)
+	}
+
+	cfg := core.Config()
+	ttl := time.Duration(cfg.TokenTTL)
+	tok, _ := core.signer.Load().Sign(user, ttl)
+	http.SetCookie(w, h.cookie(r, tok, seconds(ttl)))
+	admin := core.users.IsAdmin(user)
+	h.logger.Info("authgate: login succeeded", zap.String("user", user), zap.String("ip", c.ip), zap.String("method", methodWeb))
+	return writeJSON(w, http.StatusOK, map[string]any{"user": user, "is_admin": admin, "expires_in": seconds(ttl)})
+}
+
+// logout
+func (h *Handler) apiLogout(w http.ResponseWriter, r *http.Request, c *apiCtx) error {
+	http.SetCookie(w, h.cookie(r, "", -1))
+	if r.Method == http.MethodGet && acceptsHTML(r) {
+		w.Header().Set("Cache-Control", "no-store")
+		http.Redirect(w, r, "/", http.StatusFound)
+		return nil
+	}
+	return writeJSON(w, http.StatusOK, map[string]any{"logout": true})
+}
+
+// cookie 构造 AuthGate Cookie；maxAge<0 表示删除。
+func (h *Handler) cookie(r *http.Request, value string, maxAge int) *http.Cookie {
+	cfg := h.core.Config()
+	return &http.Cookie{
+		Name:     cfg.CookieName,
+		Value:    value,
+		Path:     "/",
+		Domain:   cfg.CookieDomain,
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteLaxMode,
+	}
 }
