@@ -1,0 +1,106 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      caddy_version:
+        description: 'Caddy 版本，留空为最新版'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  MODULE: github.com/wjzhangq/caddy-authgate
+  CADDY_VERSION: ${{ github.event.inputs.caddy_version }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.5
+
+      - name: Unit & integration tests
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Coverage
+        run: go tool cover -func=coverage.out | tail -n 1
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install xcaddy
+        run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+
+      - name: Build caddy with authgate
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p dist
+          xcaddy build \
+            --with ${MODULE}=. \
+            --output dist/caddy-authgate-linux-${{ matrix.goarch }}
+
+      - name: Verify module
+        if: matrix.goarch == 'amd64'
+        run: |
+          ./dist/caddy-authgate-linux-amd64 version
+          ./dist/caddy-authgate-linux-amd64 list-modules | grep -x 'http.handlers.authgate'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: caddy-authgate-linux-${{ matrix.goarch }}
+          path: dist/caddy-authgate-linux-${{ matrix.goarch }}
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd dist
+          chmod +x caddy-authgate-linux-*
+          sha256sum caddy-authgate-linux-* > SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

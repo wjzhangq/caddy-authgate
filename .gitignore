@@ -1,0 +1,5 @@
+/dist/
+/caddy
+coverage.out
+*.secret
+/scripts/.e2e/
