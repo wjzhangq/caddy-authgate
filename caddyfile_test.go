@@ -219,7 +219,6 @@ func TestProvisionErrors(t *testing.T) {
 	}
 }
 
-
 func TestExampleCaddyfileAdapts(t *testing.T) {
 	b, err := os.ReadFile("examples/Caddyfile")
 	if err != nil {
