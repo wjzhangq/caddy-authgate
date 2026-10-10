@@ -1,0 +1,46 @@
+# AuthGate 示例配置
+#
+# 运行前：
+#   export MAIL_TOKEN=...                 # 发码服务凭证
+#   export AUTHGATE_SECRET=$(openssl rand -hex 32)   # 可选；不配置时自动生成 <file>.secret
+#   ./caddy run --config examples/Caddyfile
+
+{
+	authgate_file            /etc/caddy/authgate/users.txt
+	authgate_token_ttl       8h
+	authgate_admin           alice bob
+	authgate_domain          example.com
+	authgate_sendcode_url    https://mail.example.com/send
+	authgate_sendcode_header Authorization "Bearer {env.MAIL_TOKEN}"
+	authgate_secret          {env.AUTHGATE_SECRET}
+	authgate_code_ttl        5m
+	authgate_code_interval   30s
+	authgate_cookie_domain   .example.com
+	authgate_max_keys        20
+}
+
+# 1. 浏览器 + 脚本混用的站点（auto）：浏览器显示登录页，curl 返回 401 JSON
+app.example.com {
+	authgate {
+		bypass /healthz /static/* /favicon.ico
+	}
+	reverse_proxy 127.0.0.1:3000
+}
+
+# 2. 纯 API 站点：只接受 Bearer key
+api.example.com {
+	authgate api
+	reverse_proxy 127.0.0.1:4000
+}
+
+# 3. 按路径混合：/api/* 只接受 Bearer，其余走网页登录
+portal.example.com {
+	route /api/* {
+		authgate api
+		reverse_proxy 127.0.0.1:5000
+	}
+	route {
+		authgate web
+		reverse_proxy 127.0.0.1:5001
+	}
+}
