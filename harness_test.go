@@ -87,7 +87,7 @@ func freePort(t *testing.T) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 	return l.Addr().(*net.TCPAddr).Port
 }
 
@@ -181,7 +181,13 @@ type resp struct {
 	json   map[string]any
 }
 
-var noRedirect = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+// 测试客户端禁用 keep-alive，避免 reload 后复用旧连接。
+var testTransport = &http.Transport{DisableKeepAlives: true}
+
+var noRedirect = &http.Client{
+	Transport:     testTransport,
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
 
 // do 发送请求。hdr 为 "Name: value" 形式。
 func (e *env) do(client *http.Client, method, u string, body io.Reader, hdr ...string) resp {
@@ -201,7 +207,7 @@ func (e *env) do(client *http.Client, method, u string, body io.Reader, hdr ...s
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	b, _ := io.ReadAll(res.Body)
 	r := resp{status: res.StatusCode, header: res.Header, body: string(b)}
 	if strings.HasPrefix(res.Header.Get("Content-Type"), "application/json") {
@@ -222,7 +228,7 @@ func newJar(t *testing.T) *http.Client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &http.Client{Jar: jar, CheckRedirect: noRedirect.CheckRedirect}
+	return &http.Client{Jar: jar, Transport: testTransport, CheckRedirect: noRedirect.CheckRedirect}
 }
 
 func expect(t *testing.T, r resp, status int, errCode string) {
@@ -239,4 +245,11 @@ const defaultUsers = "# test users\n" + adminKey + ":admin\n" + aliceKey + ":ali
 
 func writeTestFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+func (e *env) stop() {
+	e.t.Helper()
+	if err := caddy.Stop(); err != nil {
+		e.t.Fatal(err)
+	}
 }

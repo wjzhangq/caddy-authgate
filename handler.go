@@ -10,6 +10,8 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
+
+	"github.com/wjzhangq/caddy-authgate/internal/ratelimit"
 )
 
 // 站点模式。
@@ -141,6 +143,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 
 	// 4–5. 认证
 	id, hasAuthz, reason := h.authenticate(r, h.Mode != ModeAPI)
+	if reason == reasonRateLimited {
+		return h.writeRateLimited(w, r)
+	}
 	if id != nil {
 		r.Header.Set(hdrUser, id.user)
 		r.Header.Set(hdrAdmin, fmt.Sprint(id.admin))
@@ -162,19 +167,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	return h.serveLoginPage(w, r)
 }
 
+const reasonRateLimited = "rate_limited"
+
 // authenticate 提取并校验凭证。
 // 携带 Authorization 时仅校验 Bearer key；否则在 allowCookie 时校验 Cookie token。
-// reason 非空表示提交了凭证但校验失败。
+// reason 非空表示提交了凭证但校验失败；同一 IP 无效 Bearer 过多时 reason 为 rate_limited。
 func (h *Handler) authenticate(r *http.Request, allowCookie bool) (id *identity, hasAuthz bool, reason string) {
 	core := h.core
 	if authz := r.Header.Get("Authorization"); authz != "" {
+		ip := clientIP(r)
+		if ok, _ := core.limiter.Check(ratelimit.BadBearer, ip); !ok {
+			return nil, true, reasonRateLimited
+		}
 		scheme, cred, _ := strings.Cut(authz, " ")
 		cred = strings.TrimSpace(cred)
-		if !strings.EqualFold(scheme, "Bearer") || cred == "" {
-			return nil, true, "unsupported_authorization"
+		user, ok := "", false
+		if strings.EqualFold(scheme, "Bearer") && cred != "" {
+			user, ok = core.users.Lookup(cred)
 		}
-		user, ok := core.users.Lookup(cred)
 		if !ok {
+			core.limiter.Allow(ratelimit.BadBearer, ip)
+			if !strings.EqualFold(scheme, "Bearer") || cred == "" {
+				return nil, true, "unsupported_authorization"
+			}
 			return nil, true, "invalid_key"
 		}
 		return &identity{user: user, admin: core.users.IsAdmin(user), method: methodAPI}, true, ""
@@ -194,6 +209,12 @@ func (h *Handler) authenticate(r *http.Request, allowCookie bool) (id *identity,
 		return nil, false, "user_not_found"
 	}
 	return &identity{user: user, admin: core.users.IsAdmin(user), method: methodWeb, exp: exp}, false, ""
+}
+
+// writeRateLimited 输出无效 Bearer 过多导致的 429。
+func (h *Handler) writeRateLimited(w http.ResponseWriter, r *http.Request) error {
+	_, wait := h.core.limiter.Check(ratelimit.BadBearer, clientIP(r))
+	return writeError(w, http.StatusTooManyRequests, errRateLimited, map[string]any{"retry_after": seconds(wait)})
 }
 
 // stripCredentials 删除 Authorization header 与 AuthGate Cookie。

@@ -38,7 +38,7 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
-		fmt.Fprint(w, c)
+		_, _ = fmt.Fprint(w, c)
 	})
 	mux.HandleFunc("POST /status", func(w http.ResponseWriter, r *http.Request) {
 		n, err := strconv.Atoi(r.URL.Query().Get("code"))
@@ -49,7 +49,7 @@ func main() {
 		mu.Lock()
 		status = n
 		mu.Unlock()
-		fmt.Fprintln(w, "ok")
+		_, _ = fmt.Fprintln(w, "ok")
 	})
 	mux.HandleFunc("POST /", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -73,7 +73,7 @@ func main() {
 		mu.Unlock()
 		log.Printf("email=%s code=%s subject=%q status=%d auth=%q", req.Email, code, req.Subject, st, r.Header.Get("Authorization"))
 		w.WriteHeader(st)
-		fmt.Fprintln(w, `{"ok":true}`)
+		_, _ = fmt.Fprintln(w, `{"ok":true}`)
 	})
 
 	log.Printf("mocksend listening on http://%s", *addr)

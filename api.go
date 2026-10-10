@@ -72,7 +72,10 @@ func (h *Handler) serveAPI(w http.ResponseWriter, r *http.Request) error {
 	c := &apiCtx{ip: clientIP(r)}
 
 	if ep.auth != authNone {
-		id, _, _ := h.authenticate(r, true)
+		id, _, reason := h.authenticate(r, true)
+		if reason == reasonRateLimited {
+			return h.writeRateLimited(w, r)
+		}
 		if id == nil {
 			return writeError(w, http.StatusUnauthorized, errUnauthorized, nil)
 		}
