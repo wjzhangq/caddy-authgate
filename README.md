@@ -13,7 +13,14 @@ AuthGate 是一个 [Caddy](https://caddyserver.com) v2 HTTP 处理器插件，�
 
 ### 1. 获取二进制
 
-从 [Releases](https://github.com/wjzhangq/caddy-authgate/releases) 下载 `caddy-authgate-linux-amd64` 或 `caddy-authgate-linux-arm64`，并用 `SHA256SUMS` 校验：
+从 [Releases](https://github.com/wjzhangq/caddy-authgate/releases) 下载对应平台的二进制，并用 `SHA256SUMS` 校验：
+
+| 平台 | 文件 |
+|---|---|
+| Linux x86_64 / ARM64 | `caddy-authgate-linux-amd64`、`caddy-authgate-linux-arm64` |
+| macOS Intel / Apple Silicon | `caddy-authgate-darwin-amd64`、`caddy-authgate-darwin-arm64` |
+| Windows x86_64 / ARM64 | `caddy-authgate-windows-amd64.exe`、`caddy-authgate-windows-arm64.exe` |
+
 
 ```bash
 sha256sum -c SHA256SUMS --ignore-missing
@@ -94,7 +101,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 xcaddy build \
   --output dist/caddy-authgate-linux-arm64
 ```
 
-或使用 Makefile：`make build`（本机）、`make build-linux`（amd64 + arm64）。
+或使用 Makefile：`make build`（本机）、`make build-linux`（Linux amd64 + arm64）、`make build-all`（Linux / macOS / Windows 的 amd64 + arm64）。
 
 ---
 
@@ -469,6 +476,7 @@ make test        # go vet + go test -race -cover ./...
 make lint        # golangci-lint run
 make build       # xcaddy 构建 dist/caddy
 make build-linux # 构建 dist/caddy-authgate-linux-{amd64,arm64}
+make build-all   # 构建 Linux / macOS / Windows 全部平台
 make e2e         # 构建并运行 scripts/e2e.sh（需要 curl、jq）
 ```
 
@@ -484,8 +492,10 @@ go test -run xxx -bench . ./internal/store/ .
 
 1. main 分支 CI 全绿。
 2. 更新 README 中的版本说明。
-3. 打 tag 并推送：`git tag v0.1.0 && git push origin v0.1.0`。
-4. GitHub Actions 自动构建 `caddy-authgate-linux-amd64`、`caddy-authgate-linux-arm64` 与 `SHA256SUMS` 并创建 Release；下载后执行 `list-modules` 确认包含 `http.handlers.authgate`。
+3. 打 `vX.Y.Z` 形式的 tag 并推送：`git tag v1.0.1 && git push origin v1.0.1`。只有这种严格的三段版本号 tag 才会触发发布，`v1.0`、`v1.0.1-rc1` 等不会。
+4. GitHub Actions 自动构建 Linux / macOS / Windows（amd64 + arm64）共 6 个二进制与 `SHA256SUMS` 并创建 Release；下载后执行 `list-modules` 确认包含 `http.handlers.authgate`。
+
+推送 main 分支与 PR 只运行测试与构建（产物可在 Actions 的 artifacts 中下载），不会发布 Release。
 
 ---
 
