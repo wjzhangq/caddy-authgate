@@ -1,4 +1,4 @@
-// Package loginpage 内置 AuthGate 登录页。
+// Package loginpage 内置 AuthGate 登录页与管理页。
 package loginpage
 
 import (
@@ -9,8 +9,14 @@ import (
 //go:embed login.html
 var source string
 
+//go:embed manage.html
+var manageSource string
+
 // Template 是解析后的登录页模板。
 var Template = template.Must(template.New("login").Parse(source))
+
+// Manage 是 /authgate/ 管理页模板，使用 Data.Domain。
+var Manage = template.Must(template.New("manage").Parse(manageSource))
 
 // Data 是登录页模板变量。
 type Data struct {

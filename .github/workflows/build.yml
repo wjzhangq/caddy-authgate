@@ -3,7 +3,8 @@ name: build
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    # 仅 vX.Y.Z 形式的 tag（如 v1.0.1）触发发布
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
   pull_request:
   workflow_dispatch:
     inputs:
@@ -47,8 +48,17 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        goarch: [amd64, arm64]
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64, ext: .exe }
+          - { goos: windows, goarch: arm64, ext: .exe }
+    env:
+      BIN: caddy-authgate-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
     steps:
       - uses: actions/checkout@v4
 
@@ -61,33 +71,31 @@ jobs:
 
       - name: Build caddy with authgate
         env:
-          GOOS: linux
+          GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
         run: |
           mkdir -p dist
-          xcaddy build \
-            --with ${MODULE}=. \
-            --output dist/caddy-authgate-linux-${{ matrix.goarch }}
+          xcaddy build --with ${MODULE}=. --output dist/${BIN}
 
       - name: Verify module
-        if: matrix.goarch == 'amd64'
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: |
-          ./dist/caddy-authgate-linux-amd64 version
-          ./dist/caddy-authgate-linux-amd64 list-modules | grep -x 'http.handlers.authgate'
+          ./dist/${BIN} version
+          ./dist/${BIN} list-modules | grep -x 'http.handlers.authgate'
 
       - name: E2E
-        if: matrix.goarch == 'amd64'
-        run: ./scripts/e2e.sh dist/caddy-authgate-linux-amd64
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: ./scripts/e2e.sh dist/${BIN}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: caddy-authgate-linux-${{ matrix.goarch }}
-          path: dist/caddy-authgate-linux-${{ matrix.goarch }}
+          name: ${{ env.BIN }}
+          path: dist/${{ env.BIN }}
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -101,8 +109,8 @@ jobs:
       - name: Checksums
         run: |
           cd dist
-          chmod +x caddy-authgate-linux-*
-          sha256sum caddy-authgate-linux-* > SHA256SUMS
+          chmod +x caddy-authgate-linux-* caddy-authgate-darwin-*
+          sha256sum caddy-authgate-* > SHA256SUMS
 
       - uses: softprops/action-gh-release@v2
         with:

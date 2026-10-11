@@ -217,3 +217,38 @@ func TestCSRFOK(t *testing.T) {
 		}
 	}
 }
+
+// 管理员通过 user 参数管理他人 key；普通用户不能操作他人 key。
+func TestAdminManagesOtherKeys(t *testing.T) {
+	e := newEnv(t, defaultUsers, "")
+	expect(t, e.get(e.url("api", "/authgate/key/list?user=bob"), bearer(aliceKey)), 403, "forbidden")
+	expect(t, e.get(e.url("api", "/authgate/key/add?user=bob"), bearer(aliceKey)), 403, "forbidden")
+	expect(t, e.get(e.url("api", "/authgate/key/delete?user=bob&key="+bobKey), bearer(aliceKey)), 403, "forbidden")
+	// 指定自己等同于不指定
+	r := e.get(e.url("api", "/authgate/key/list?user=alice"), bearer(aliceKey))
+	expect(t, r, 200, "")
+
+	expect(t, e.get(e.url("api", "/authgate/key/list?user=nobody"), bearer(adminKey)), 404, "user_not_found")
+	expect(t, e.get(e.url("api", "/authgate/key/list?user=-bad"), bearer(adminKey)), 400, "invalid_param")
+	r = e.get(e.url("api", "/authgate/key/list?user=bob"), bearer(adminKey))
+	expect(t, r, 200, "")
+	if r.json["user"] != "bob" || len(r.json["keys"].([]any)) != 1 {
+		t.Fatalf("list = %v", r.json)
+	}
+	r = e.get(e.url("api", "/authgate/key/add?user=bob"), bearer(adminKey))
+	expect(t, r, 201, "")
+	nk := r.json["key"].(string)
+	if r.json["user"] != "bob" {
+		t.Errorf("add = %v", r.json)
+	}
+	if b := e.get(e.url("api", "/"), bearer(nk)).body; !strings.Contains(b, "user=bob") {
+		t.Errorf("new key belongs to wrong user: %s", b)
+	}
+	expect(t, e.get(e.url("api", "/authgate/key/delete?user=bob&key="+aliceKey), bearer(adminKey)), 404, "key_not_found")
+	expect(t, e.get(e.url("api", "/authgate/key/delete?user=bob&key="+bobKey), bearer(adminKey)), 200, "")
+	expect(t, e.get(e.url("api", "/authgate/key/delete?user=bob&key="+nk), bearer(adminKey)), 409, "last_key")
+	// 仅在管理员列表中的用户也可被添加 key
+	expect(t, e.get(e.url("api", "/authgate/key/add?user=root"), bearer(adminKey)), 201, "")
+	// Cookie 认证仍受 CSRF 约束
+	expect(t, e.get(e.url("api", "/authgate/key/add?user=bob"), e.cookie("admin")), 403, "csrf_rejected")
+}

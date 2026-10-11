@@ -50,6 +50,7 @@ var endpoints = map[string]endpoint{
 	"code/send":   {authNone, false, []string{http.MethodPost}, (*Handler).apiCodeSend},
 	"code/valid":  {authNone, false, []string{http.MethodPost}, (*Handler).apiCodeValid},
 	"logout":      {authNone, false, getPost, (*Handler).apiLogout},
+	"":            {authNone, false, []string{http.MethodGet, http.MethodHead}, (*Handler).apiManagePage},
 }
 
 // apiCtx 是单次接口调用的上下文。
@@ -238,9 +239,33 @@ type keyInfo struct {
 	CreatedAt *time.Time `json:"created_at"`
 }
 
-// key/list
+// keyTarget 返回 key 接口操作的目标用户：未指定 user 时为当前用户；
+// 指定其他用户时要求当前用户为管理员且目标用户存在。出错时已输出响应，返回 ok=false。
+func (h *Handler) keyTarget(w http.ResponseWriter, c *apiCtx) (user string, ok bool, err error) {
+	if strings.TrimSpace(c.params.Get("user")) == "" {
+		return c.id.user, true, nil
+	}
+	user, valid := h.userParam(c)
+	switch {
+	case !valid:
+		return "", false, writeError(w, http.StatusBadRequest, errInvalidParam, nil)
+	case user == c.id.user:
+		return user, true, nil
+	case !c.id.admin:
+		return "", false, writeError(w, http.StatusForbidden, errForbidden, nil)
+	case !h.core.users.Exists(user):
+		return "", false, writeError(w, http.StatusNotFound, errUserNotFound, nil)
+	}
+	return user, true, nil
+}
+
+// key/list[?user=]
 func (h *Handler) apiKeyList(w http.ResponseWriter, r *http.Request, c *apiCtx) error {
-	keys := h.core.users.Keys(c.id.user)
+	user, ok, err := h.keyTarget(w, c)
+	if !ok {
+		return err
+	}
+	keys := h.core.users.Keys(user)
 	out := make([]keyInfo, 0, len(keys))
 	for _, k := range keys {
 		ki := keyInfo{Key: k}
@@ -249,29 +274,37 @@ func (h *Handler) apiKeyList(w http.ResponseWriter, r *http.Request, c *apiCtx) 
 		}
 		out = append(out, ki)
 	}
-	return writeJSON(w, http.StatusOK, map[string]any{"user": c.id.user, "keys": out})
+	return writeJSON(w, http.StatusOK, map[string]any{"user": user, "keys": out})
 }
 
-// key/add
+// key/add[?user=]
 func (h *Handler) apiKeyAdd(w http.ResponseWriter, r *http.Request, c *apiCtx) error {
-	key, err := h.core.users.AddKey(c.id.user, h.core.Config().MaxKeys)
+	user, ok, err := h.keyTarget(w, c)
+	if !ok {
+		return err
+	}
+	key, err := h.core.users.AddKey(user, h.core.Config().MaxKeys)
 	if errors.Is(err, store.ErrKeyLimit) {
 		return writeError(w, http.StatusConflict, errKeyLimit, map[string]any{"max_keys": h.core.Config().MaxKeys})
 	}
 	if err != nil {
 		return h.storageError(w, err)
 	}
-	h.audit("authgate: key added", c, c.id.user, key)
-	return writeJSON(w, http.StatusCreated, map[string]any{"user": c.id.user, "key": key})
+	h.audit("authgate: key added", c, user, key)
+	return writeJSON(w, http.StatusCreated, map[string]any{"user": user, "key": key})
 }
 
-// key/delete?key=
+// key/delete?key=[&user=]
 func (h *Handler) apiKeyDelete(w http.ResponseWriter, r *http.Request, c *apiCtx) error {
+	user, ok, err := h.keyTarget(w, c)
+	if !ok {
+		return err
+	}
 	key := strings.TrimSpace(c.params.Get("key"))
 	if key == "" {
 		return writeError(w, http.StatusBadRequest, errInvalidParam, nil)
 	}
-	err := h.core.users.DeleteKey(c.id.user, key)
+	err = h.core.users.DeleteKey(user, key)
 	switch {
 	case errors.Is(err, store.ErrKeyNotFound):
 		return writeError(w, http.StatusNotFound, errKeyNotFound, nil)
@@ -280,8 +313,8 @@ func (h *Handler) apiKeyDelete(w http.ResponseWriter, r *http.Request, c *apiCtx
 	case err != nil:
 		return h.storageError(w, err)
 	}
-	h.audit("authgate: key deleted", c, c.id.user, key)
-	return writeJSON(w, http.StatusOK, map[string]any{"user": c.id.user, "key": key, "deleted": true})
+	h.audit("authgate: key deleted", c, user, key)
+	return writeJSON(w, http.StatusOK, map[string]any{"user": user, "key": key, "deleted": true})
 }
 
 // me

@@ -4,6 +4,7 @@ AuthGate 是一个 [Caddy](https://caddyserver.com) v2 HTTP 处理器插件，�
 
 - **验证码登录**：内置登录页，用户输入用户名，验证码经外部发码服务发送到 `用户名@域名`，验证后写入 Cookie
 - **Bearer key**：脚本与服务间调用使用 `Authorization: Bearer sk-…`
+- **管理页面**：浏览器访问 `/authgate/` 即可管理自己的 key；管理员还可查看所有用户、增删用户及其 key
 - **用户管理**：管理员通过 HTTP 接口增删用户；用户自助管理自己的 key；用户文件为纯文本，可手工编辑并热加载
 - **header 注入**：认证通过后向上游注入 `X-Auth-User`、`X-Is-Admin`、`X-Auth-Method`，并剥离客户端伪造的同名 header 与凭证
 
@@ -13,7 +14,14 @@ AuthGate 是一个 [Caddy](https://caddyserver.com) v2 HTTP 处理器插件，�
 
 ### 1. 获取二进制
 
-从 [Releases](https://github.com/wjzhangq/caddy-authgate/releases) 下载 `caddy-authgate-linux-amd64` 或 `caddy-authgate-linux-arm64`，并用 `SHA256SUMS` 校验：
+从 [Releases](https://github.com/wjzhangq/caddy-authgate/releases) 下载对应平台的二进制，并用 `SHA256SUMS` 校验：
+
+| 平台 | 文件 |
+|---|---|
+| Linux x86_64 / ARM64 | `caddy-authgate-linux-amd64`、`caddy-authgate-linux-arm64` |
+| macOS Intel / Apple Silicon | `caddy-authgate-darwin-amd64`、`caddy-authgate-darwin-arm64` |
+| Windows x86_64 / ARM64 | `caddy-authgate-windows-amd64.exe`、`caddy-authgate-windows-arm64.exe` |
+
 
 ```bash
 sha256sum -c SHA256SUMS --ignore-missing
@@ -52,15 +60,12 @@ app.example.com {
 2. 启动 Caddy：`caddy run --config Caddyfile`。
 3. 浏览器打开 `https://app.example.com`，看到登录页，输入 `alice`，点击“发送验证码”。
 4. 在 `alice@example.com` 邮箱中收到验证码，输入后登录。
-5. 需要 API key 时，在已登录的浏览器中（或用 curl 带 Cookie）调用 `POST /authgate/key/add`；也可以直接让管理员为用户创建：
+5. 打开 `https://app.example.com/authgate/` 进入[管理页面](#管理页面)，可添加用户、为用户生成 key。也可以用接口直接创建：
 
 ```bash
 curl -H "Authorization: Bearer $ADMIN_KEY" "https://app.example.com/authgate/user/add?user=bob"
 # {"created":true,"key":"sk-68e8c800…","user":"bob"}
 ```
-
-> 首个管理员还没有 key 时，可以先用 Cookie 调用 `key/add`（需 POST 且带同源 `Origin`），浏览器控制台执行
-> `fetch('/authgate/key/add',{method:'POST'}).then(r=>r.json()).then(console.log)` 即可。
 
 本地试用可以使用仓库自带的模拟发码服务，它会把验证码打印在终端：
 
@@ -94,7 +99,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 xcaddy build \
   --output dist/caddy-authgate-linux-arm64
 ```
 
-或使用 Makefile：`make build`（本机）、`make build-linux`（amd64 + arm64）。
+或使用 Makefile：`make build`（本机）、`make build-linux`（Linux amd64 + arm64）、`make build-all`（Linux / macOS / Windows 的 amd64 + arm64）。
 
 ---
 
@@ -272,6 +277,23 @@ curl -H "Authorization: Bearer sk-68e8c80012ab34cd56ef7890" https://api.example.
 
 ---
 
+## 管理页面
+
+在任意启用了 `authgate` 的站点上用浏览器访问 `/authgate/`（`/authgate` 会 301 跳转过去）：
+
+- 未登录时显示登录页，登录成功后自动进入管理页。
+- **所有用户**：“我的 key”区域列出自己的全部 key（完整显示，可一键复制）及创建时间，可添加或删除 key；普通用户至少保留一个 key。
+- **管理员**额外显示“用户管理”区域：
+  - 列出所有用户（含仅在 `authgate_admin` 中配置的管理员），标注管理员身份与 key 数量；
+  - 添加用户（自动生成首个 key 并提示）、删除用户（配置中的管理员与自己不可删除）；
+  - 点击“管理 key”展开该用户的 key 列表，可为其添加或删除 key。
+
+页面所有操作都通过下文的接口以 Cookie 方式调用（同源 POST，满足 CSRF 规则），与登录页使用相同的 CSP，不加载外部资源。
+
+> 页面会完整显示 key，请注意屏幕共享与截图。
+
+---
+
 ## 后端集成
 
 认证通过后，上游收到以下 header：
@@ -331,14 +353,16 @@ curl -H "$H" "$BASE/user/list"
 
 按用户名排序，包含仅在管理员列表中的用户。
 
-### `key/list` — 登录
+key 接口（`key/list`、`key/add`、`key/delete`）默认操作当前用户自己的 key；**管理员**可额外传 `user=` 参数操作其他用户的 key（目标用户不存在时返回 `404 user_not_found`，普通用户指定他人时返回 `403 forbidden`）。
+
+### `key/list[?user=]` — 登录
 
 ```bash
 curl -H "$H" "$BASE/key/list"
 # {"user":"bob","keys":[{"key":"sk-68e8c800…","created_at":"2025-10-10T08:00:00Z"},{"key":"legacy-…","created_at":null}]}
 ```
 
-### `key/add` — 登录，变更
+### `key/add[?user=]` — 登录，变更
 
 ```bash
 curl -X POST -H "$H" "$BASE/key/add"
@@ -347,14 +371,14 @@ curl -X POST -H "$H" "$BASE/key/add"
 
 超过 `authgate_max_keys` 时返回 `409 key_limit_reached`。
 
-### `key/delete?key=` — 登录，变更
+### `key/delete?key=[&user=]` — 登录，变更
 
 ```bash
 curl -X POST -H "$H" -d key=sk-68e8c800… "$BASE/key/delete"
 # {"user":"bob","key":"sk-68e8c800…","deleted":true}
 ```
 
-只能删除自己的 key。错误：`404 key_not_found`、`409 last_key`（普通用户不能删除最后一个 key；管理员可以）。
+普通用户只能删除自己的 key。错误：`404 key_not_found`、`409 last_key`（普通用户不能删除最后一个 key；管理员可以）。
 
 ### `me` — 登录
 
@@ -445,8 +469,8 @@ curl -X POST "$BASE/logout"
 ├── handler.go           Provision / Validate / Cleanup / ServeHTTP 管线
 ├── api.go               /authgate/* 接口
 ├── respond.go           JSON 响应与错误码
-├── loginpage.go         登录页渲染
-├── loginpage/           内置登录页（go:embed）
+├── loginpage.go         登录页与管理页渲染
+├── loginpage/           内置登录页与管理页（go:embed）
 ├── internal/
 │   ├── store/           用户文件解析、索引、原子写入、热加载
 │   ├── code/            验证码生成、冷却、校验、尝试次数
@@ -469,6 +493,7 @@ make test        # go vet + go test -race -cover ./...
 make lint        # golangci-lint run
 make build       # xcaddy 构建 dist/caddy
 make build-linux # 构建 dist/caddy-authgate-linux-{amd64,arm64}
+make build-all   # 构建 Linux / macOS / Windows 全部平台
 make e2e         # 构建并运行 scripts/e2e.sh（需要 curl、jq）
 ```
 
@@ -484,8 +509,10 @@ go test -run xxx -bench . ./internal/store/ .
 
 1. main 分支 CI 全绿。
 2. 更新 README 中的版本说明。
-3. 打 tag 并推送：`git tag v0.1.0 && git push origin v0.1.0`。
-4. GitHub Actions 自动构建 `caddy-authgate-linux-amd64`、`caddy-authgate-linux-arm64` 与 `SHA256SUMS` 并创建 Release；下载后执行 `list-modules` 确认包含 `http.handlers.authgate`。
+3. 打 `vX.Y.Z` 形式的 tag 并推送：`git tag v1.0.1 && git push origin v1.0.1`。只有这种严格的三段版本号 tag 才会触发发布，`v1.0`、`v1.0.1-rc1` 等不会。
+4. GitHub Actions 自动构建 Linux / macOS / Windows（amd64 + arm64）共 6 个二进制与 `SHA256SUMS` 并创建 Release；下载后执行 `list-modules` 确认包含 `http.handlers.authgate`。
+
+推送 main 分支与 PR 只运行测试与构建（产物可在 Actions 的 artifacts 中下载），不会发布 Release。
 
 ---
 
