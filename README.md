@@ -338,14 +338,16 @@ curl -H "$H" "$BASE/user/list"
 
 按用户名排序，包含仅在管理员列表中的用户。
 
-### `key/list` — 登录
+key 接口（`key/list`、`key/add`、`key/delete`）默认操作当前用户自己的 key；**管理员**可额外传 `user=` 参数操作其他用户的 key（目标用户不存在时返回 `404 user_not_found`，普通用户指定他人时返回 `403 forbidden`）。
+
+### `key/list[?user=]` — 登录
 
 ```bash
 curl -H "$H" "$BASE/key/list"
 # {"user":"bob","keys":[{"key":"sk-68e8c800…","created_at":"2025-10-10T08:00:00Z"},{"key":"legacy-…","created_at":null}]}
 ```
 
-### `key/add` — 登录，变更
+### `key/add[?user=]` — 登录，变更
 
 ```bash
 curl -X POST -H "$H" "$BASE/key/add"
@@ -354,14 +356,14 @@ curl -X POST -H "$H" "$BASE/key/add"
 
 超过 `authgate_max_keys` 时返回 `409 key_limit_reached`。
 
-### `key/delete?key=` — 登录，变更
+### `key/delete?key=[&user=]` — 登录，变更
 
 ```bash
 curl -X POST -H "$H" -d key=sk-68e8c800… "$BASE/key/delete"
 # {"user":"bob","key":"sk-68e8c800…","deleted":true}
 ```
 
-只能删除自己的 key。错误：`404 key_not_found`、`409 last_key`（普通用户不能删除最后一个 key；管理员可以）。
+普通用户只能删除自己的 key。错误：`404 key_not_found`、`409 last_key`（普通用户不能删除最后一个 key；管理员可以）。
 
 ### `me` — 登录
 
