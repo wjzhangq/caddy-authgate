@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<title>AuthGate 管理</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--fg:#1f2328;--muted:#656d76;--border:#d0d7de;--accent:#0969da;--accent-fg:#fff;--err:#cf222e;--ok:#1a7f37;--input:#fff;--badge:#ddf4ff;--badge-fg:#0550ae;--row:#f6f8fa}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--card:#161b22;--fg:#e6edf3;--muted:#8d96a0;--border:#30363d;--accent:#2f81f7;--accent-fg:#fff;--err:#f85149;--ok:#3fb950;--input:#0d1117;--badge:#121d2f;--badge-fg:#4493f8;--row:#1c2128}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;max-width:960px;margin:0 auto;padding:16px}
+header h1{font-size:18px;margin:0}
+.who{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+main{max-width:960px;margin:0 auto;padding:0 16px 32px}
+section{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px}
+h2 .muted{font-weight:400}
+h2{font-size:16px;margin:0 0 12px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:8px;border-top:1px solid var(--border);vertical-align:middle}
+th{color:var(--muted);font-weight:500;border-top:0}
+td.actions{text-align:right;white-space:nowrap}
+.key{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;word-break:break-all}
+.muted{color:var(--muted)}
+.badge{display:inline-block;padding:0 8px;border-radius:999px;background:var(--badge);color:var(--badge-fg);font-size:12px;line-height:20px}
+button{border:1px solid transparent;border-radius:6px;padding:5px 10px;font:inherit;cursor:pointer;background:var(--accent);color:var(--accent-fg)}
+button.secondary{background:transparent;color:var(--fg);border-color:var(--border)}
+button.danger{background:transparent;color:var(--err);border-color:var(--border)}
+button:disabled{opacity:.45;cursor:not-allowed}
+input{border:1px solid var(--border);border-radius:6px;padding:5px 10px;font:inherit;background:var(--input);color:var(--fg);min-width:0}
+form.inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+tr.sub>td{background:var(--row);padding:12px}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);max-width:calc(100% - 32px);padding:8px 14px;border-radius:8px;background:var(--fg);color:var(--bg);opacity:0;transition:opacity .2s;pointer-events:none}
+#toast.show{opacity:.92}
+#toast.err{background:var(--err);color:#fff}
+.hidden{display:none}
+@media (max-width:640px){th.hide-sm,td.hide-sm{display:none}}
+</style>
+</head>
+<body>
+<header>
+  <h1>AuthGate 管理</h1>
+  <div class="who"><span id="me" class="muted">加载中…</span><button id="logout" class="secondary" type="button">退出登录</button></div>
+</header>
+<main>
+  <section>
+    <h2><span>我的 key</span><button id="my-add" type="button">添加 key</button></h2>
+    <div id="my-keys"></div>
+  </section>
+  <section id="admin" class="hidden">
+    <h2>
+      <span>用户管理</span>
+      <form id="add-user" class="inline">
+        <input id="new-user" placeholder="用户名" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+        <span class="muted">@{{.Domain}}</span>
+        <button type="submit">添加用户</button>
+      </form>
+    </h2>
+    <table>
+      <thead><tr><th>用户</th><th>角色</th><th>key 数量</th><th></th></tr></thead>
+      <tbody id="users"></tbody>
+    </table>
+  </section>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
+<script>
+(function () {
+  "use strict";
+  var DOMAIN = {{.Domain}};
+  var me = null;
+  var open = {}; // 已展开 key 列表的用户
+  var $ = function (id) { return document.getElementById(id); };
+
+  function el(tag, attrs, children) {
+    var e = document.createElement(tag);
+    if (attrs) for (var k in attrs) {
+      if (k === "text") e.textContent = attrs[k];
+      else if (k === "onclick") e.addEventListener("click", attrs[k]);
+      else if (k === "disabled") e.disabled = !!attrs[k];
+      else e.setAttribute(k, attrs[k]);
+    }
+    (children || []).forEach(function (c) { if (c) e.appendChild(c); });
+    return e;
+  }
+
+  var toastTimer;
+  function toast(text, err) {
+    var t = $("toast");
+    t.textContent = text;
+    t.className = "show" + (err ? " err" : "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = ""; }, err ? 4000 : 2500);
+  }
+
+  function api(path, data) {
+    return fetch("/authgate/" + path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      body: new URLSearchParams(data || {})
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (b) {
+        if (res.status === 401) { location.reload(); throw new Error("unauthorized"); }
+        if (!res.ok) throw new Error(b.message || ("请求失败（" + res.status + "）"));
+        return b;
+      });
+    });
+  }
+
+  function fail(e) { if (e.message !== "unauthorized") toast(e.message, true); }
+
+  function copy(text) {
+    if (navigator.clipboard) navigator.clipboard.writeText(text).then(function () { toast("已复制"); }, function () { toast("复制失败", true); });
+  }
+
+  function fmtTime(s) {
+    if (!s) return "—";
+    var d = new Date(s);
+    return isNaN(d) ? s : d.toLocaleString();
+  }
+
+  // keyTable 渲染某用户的 key 列表；user 为空表示当前用户。
+  function keyTable(user, keys, isAdminUser, onChange) {
+    if (!keys.length) return el("p", { "class": "muted", text: "暂无 key" });
+    var last = keys.length === 1 && !isAdminUser;
+    var rows = keys.map(function (k) {
+      return el("tr", null, [
+        el("td", { "class": "key", text: k.key }),
+        el("td", { "class": "muted hide-sm", text: fmtTime(k.created_at) }),
+        el("td", { "class": "actions" }, [
+          el("button", { "class": "secondary", type: "button", text: "复制", onclick: function () { copy(k.key); } }),
+          document.createTextNode(" "),
+          el("button", {
+            "class": "danger", type: "button", text: "删除", disabled: last,
+            title: last ? "普通用户至少保留一个 key" : "",
+            onclick: function () {
+              if (!confirm("确定删除 key " + k.key + " ？")) return;
+              var data = { key: k.key };
+              if (user) data.user = user;
+              api("key/delete", data).then(function () { toast("已删除 key"); onChange(); }).catch(fail);
+            }
+          })
+        ])
+      ]);
+    });
+    return el("table", null, [
+      el("thead", null, [el("tr", null, [el("th", { text: "key" }), el("th", { "class": "hide-sm", text: "创建时间" }), el("th")])]),
+      el("tbody", null, rows)
+    ]);
+  }
+
+  function loadMyKeys() {
+    return api("key/list").then(function (b) {
+      var box = $("my-keys");
+      box.replaceChildren(keyTable("", b.keys || [], me.is_admin, refresh));
+    }).catch(fail);
+  }
+
+  function loadUsers() {
+    return api("user/list").then(function (b) {
+      var tbody = $("users");
+      tbody.replaceChildren();
+      (b.users || []).forEach(function (u) {
+        var self = u.user === me.user;
+        var row = el("tr", null, [
+          el("td", null, [el("span", { text: u.user }), el("span", { "class": "muted hide-sm", text: "@" + DOMAIN })]),
+          el("td", null, [u.is_admin ? el("span", { "class": "badge", text: "管理员" }) : el("span", { "class": "muted", text: "用户" })]),
+          el("td", { text: String(u.key_count) }),
+          el("td", { "class": "actions" }, [
+            el("button", {
+              "class": "secondary", type: "button", text: open[u.user] ? "收起" : "管理 key",
+              onclick: function () { open[u.user] = !open[u.user]; loadUsers(); }
+            }),
+            document.createTextNode(" "),
+            el("button", {
+              "class": "danger", type: "button", text: "删除用户", disabled: u.is_admin || self,
+              title: self ? "不能删除自己" : (u.is_admin ? "配置中的管理员不能删除" : ""),
+              onclick: function () {
+                if (!confirm("确定删除用户 " + u.user + " 及其全部 " + u.key_count + " 个 key？")) return;
+                api("user/delete", { user: u.user }).then(function () { toast("已删除用户 " + u.user); delete open[u.user]; refresh(); }).catch(fail);
+              }
+            })
+          ])
+        ]);
+        tbody.appendChild(row);
+        if (open[u.user]) {
+          var cell = el("td", { colspan: "4" }, [el("p", { "class": "muted", text: "加载中…" })]);
+          tbody.appendChild(el("tr", { "class": "sub" }, [cell]));
+          api("key/list", { user: u.user }).then(function (kb) {
+            var add = el("button", {
+              type: "button", text: "为 " + u.user + " 添加 key",
+              onclick: function () {
+                api("key/add", { user: u.user }).then(function (r) { toast("已添加 key：" + r.key); refresh(); }).catch(fail);
+              }
+            });
+            cell.replaceChildren(keyTable(u.user, kb.keys || [], u.is_admin, refresh), el("p", null, [add]));
+          }).catch(fail);
+        }
+      });
+    }).catch(fail);
+  }
+
+  function refresh() {
+    loadMyKeys();
+    if (me.is_admin) loadUsers();
+  }
+
+  $("my-add").addEventListener("click", function () {
+    api("key/add").then(function (r) { toast("已添加 key：" + r.key); refresh(); }).catch(fail);
+  });
+
+  $("add-user").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var input = $("new-user");
+    var name = input.value.trim().toLowerCase();
+    var sfx = "@" + DOMAIN;
+    if (name.slice(-sfx.length) === sfx) name = name.slice(0, -sfx.length);
+    if (!name) return;
+    api("user/add", { user: name }).then(function (r) {
+      toast(r.created ? "已添加用户 " + r.user + "，key：" + r.key : "用户 " + r.user + " 已存在");
+      input.value = "";
+      refresh();
+    }).catch(fail);
+  });
+
+  $("logout").addEventListener("click", function () {
+    api("logout").then(function () { location.reload(); }).catch(fail);
+  });
+
+  api("me").then(function (b) {
+    me = b;
+    $("me").replaceChildren(
+      el("span", { text: b.user + "@" + DOMAIN }),
+      b.is_admin ? el("span", { "class": "badge", text: "管理员" }) : null
+    );
+    if (b.is_admin) $("admin").classList.remove("hidden");
+    refresh();
+  }).catch(fail);
+})();
+</script>
+</body>
+</html>

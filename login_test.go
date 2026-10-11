@@ -251,3 +251,24 @@ func TestCookieOptions(t *testing.T) {
 		t.Fatalf("custom cookie: %d %s", r.status, r.body)
 	}
 }
+
+// /authgate/ 管理页：未登录返回登录页，登录后返回管理页。
+func TestManagePage(t *testing.T) {
+	e := newEnv(t, defaultUsers, "")
+	r := e.get(e.url("api", "/authgate"))
+	if r.status != 301 || r.header.Get("Location") != "/authgate/" {
+		t.Fatalf("redirect: %d %v", r.status, r.header)
+	}
+	r = e.get(e.url("api", "/authgate/"), "Accept: text/html")
+	if r.status != 401 || !strings.Contains(r.body, "code/send") {
+		t.Fatalf("unauthenticated: %d", r.status)
+	}
+	r = e.get(e.url("api", "/authgate/"), e.cookie("alice"))
+	if r.status != 200 || !strings.Contains(r.body, "AuthGate 管理") || !strings.Contains(r.body, `var DOMAIN = "example.com";`) {
+		t.Fatalf("manage page: %d", r.status)
+	}
+	if r.header.Get("Content-Security-Policy") != loginCSP || r.header.Get("Cache-Control") != "no-store" {
+		t.Errorf("headers = %v", r.header)
+	}
+	expect(t, e.do(nil, http.MethodPost, e.url("api", "/authgate/"), nil, e.cookie("alice")), 405, "method_not_allowed")
+}

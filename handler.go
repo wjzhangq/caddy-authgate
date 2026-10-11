@@ -125,7 +125,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	r.Header.Del(hdrAdmin)
 	r.Header.Del(hdrMethod)
 
-	// 2. 内置接口
+	// 2. 内置接口与管理页
+	if r.URL.Path == strings.TrimSuffix(apiPrefix, "/") {
+		http.Redirect(w, r, apiPrefix, http.StatusMovedPermanently)
+		return nil
+	}
 	if strings.HasPrefix(r.URL.Path, apiPrefix) {
 		return h.serveAPI(w, r)
 	}

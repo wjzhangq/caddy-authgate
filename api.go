@@ -50,6 +50,7 @@ var endpoints = map[string]endpoint{
 	"code/send":   {authNone, false, []string{http.MethodPost}, (*Handler).apiCodeSend},
 	"code/valid":  {authNone, false, []string{http.MethodPost}, (*Handler).apiCodeValid},
 	"logout":      {authNone, false, getPost, (*Handler).apiLogout},
+	"":            {authNone, false, []string{http.MethodGet, http.MethodHead}, (*Handler).apiManagePage},
 }
 
 // apiCtx 是单次接口调用的上下文。

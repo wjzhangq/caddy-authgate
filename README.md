@@ -4,6 +4,7 @@ AuthGate 是一个 [Caddy](https://caddyserver.com) v2 HTTP 处理器插件，�
 
 - **验证码登录**：内置登录页，用户输入用户名，验证码经外部发码服务发送到 `用户名@域名`，验证后写入 Cookie
 - **Bearer key**：脚本与服务间调用使用 `Authorization: Bearer sk-…`
+- **管理页面**：浏览器访问 `/authgate/` 即可管理自己的 key；管理员还可查看所有用户、增删用户及其 key
 - **用户管理**：管理员通过 HTTP 接口增删用户；用户自助管理自己的 key；用户文件为纯文本，可手工编辑并热加载
 - **header 注入**：认证通过后向上游注入 `X-Auth-User`、`X-Is-Admin`、`X-Auth-Method`，并剥离客户端伪造的同名 header 与凭证
 
@@ -59,15 +60,12 @@ app.example.com {
 2. 启动 Caddy：`caddy run --config Caddyfile`。
 3. 浏览器打开 `https://app.example.com`，看到登录页，输入 `alice`，点击“发送验证码”。
 4. 在 `alice@example.com` 邮箱中收到验证码，输入后登录。
-5. 需要 API key 时，在已登录的浏览器中（或用 curl 带 Cookie）调用 `POST /authgate/key/add`；也可以直接让管理员为用户创建：
+5. 打开 `https://app.example.com/authgate/` 进入[管理页面](#管理页面)，可添加用户、为用户生成 key。也可以用接口直接创建：
 
 ```bash
 curl -H "Authorization: Bearer $ADMIN_KEY" "https://app.example.com/authgate/user/add?user=bob"
 # {"created":true,"key":"sk-68e8c800…","user":"bob"}
 ```
-
-> 首个管理员还没有 key 时，可以先用 Cookie 调用 `key/add`（需 POST 且带同源 `Origin`），浏览器控制台执行
-> `fetch('/authgate/key/add',{method:'POST'}).then(r=>r.json()).then(console.log)` 即可。
 
 本地试用可以使用仓库自带的模拟发码服务，它会把验证码打印在终端：
 
@@ -279,6 +277,23 @@ curl -H "Authorization: Bearer sk-68e8c80012ab34cd56ef7890" https://api.example.
 
 ---
 
+## 管理页面
+
+在任意启用了 `authgate` 的站点上用浏览器访问 `/authgate/`（`/authgate` 会 301 跳转过去）：
+
+- 未登录时显示登录页，登录成功后自动进入管理页。
+- **所有用户**：“我的 key”区域列出自己的全部 key（完整显示，可一键复制）及创建时间，可添加或删除 key；普通用户至少保留一个 key。
+- **管理员**额外显示“用户管理”区域：
+  - 列出所有用户（含仅在 `authgate_admin` 中配置的管理员），标注管理员身份与 key 数量；
+  - 添加用户（自动生成首个 key 并提示）、删除用户（配置中的管理员与自己不可删除）；
+  - 点击“管理 key”展开该用户的 key 列表，可为其添加或删除 key。
+
+页面所有操作都通过下文的接口以 Cookie 方式调用（同源 POST，满足 CSRF 规则），与登录页使用相同的 CSP，不加载外部资源。
+
+> 页面会完整显示 key，请注意屏幕共享与截图。
+
+---
+
 ## 后端集成
 
 认证通过后，上游收到以下 header：
@@ -454,8 +469,8 @@ curl -X POST "$BASE/logout"
 ├── handler.go           Provision / Validate / Cleanup / ServeHTTP 管线
 ├── api.go               /authgate/* 接口
 ├── respond.go           JSON 响应与错误码
-├── loginpage.go         登录页渲染
-├── loginpage/           内置登录页（go:embed）
+├── loginpage.go         登录页与管理页渲染
+├── loginpage/           内置登录页与管理页（go:embed）
 ├── internal/
 │   ├── store/           用户文件解析、索引、原子写入、热加载
 │   ├── code/            验证码生成、冷却、校验、尝试次数
