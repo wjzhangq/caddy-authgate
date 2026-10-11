@@ -10,6 +10,106 @@ AuthGate 是一个 [Caddy](https://caddyserver.com) v2 HTTP 处理器插件，�
 
 ---
 
+## 架构
+
+AuthGate 以 Caddy 模块 `http.handlers.authgate` 挂在站点处理链上，默认排在 `basic_auth` 之后、`reverse_proxy` 与 `file_server` 之前。Caddyfile 全局选项解析成一份 `GlobalConfig`；同一用户文件上的多个站点通过 `UsagePool` 共用一个 `Core`。验证码、发送冷却、IP 限流和用户文件热加载都放在这个 `Core` 里：Caddy reload 时保留，进程之间不共享。
+
+### 组件
+
+```mermaid
+flowchart LR
+  subgraph callers["调用方"]
+    direction TB
+    browser["浏览器"]
+    script["脚本与服务"]
+  end
+
+  subgraph plugin["caddy-authgate"]
+    direction TB
+    handler["Handler"]
+    api["/authgate API"]
+    pages["loginpage"]
+    keygen["keygen"]
+    subgraph core["Core · 按用户文件共享"]
+      direction TB
+      store["store"]
+      codes["code"]
+      limiter["ratelimit"]
+      signer["token"]
+      mail["mailer"]
+    end
+  end
+
+  subgraph external["持久化与外部系统"]
+    direction TB
+    users[("users.txt")]
+    secret[("签名密钥")]
+    sendcode["发码服务"]
+    upstream["上游应用"]
+  end
+
+  browser --> handler
+  script --> handler
+  handler --> api
+  handler --> pages
+  handler --> core
+  handler -->|"注入 X-Auth-*"| upstream
+  api -->|"生成 key"| keygen
+  store -->|"生成 key"| keygen
+  store -->|"读写"| users
+  signer -->|"读取或生成"| secret
+  mail -->|"POST"| sendcode
+```
+
+| 组件 | 代码 | 职责 |
+|---|---|---|
+| `Handler` | `handler.go` | 站点级中间件。先去掉客户端伪造的身份 header，再按路径分流 |
+| `/authgate` API | `api.go`、`respond.go` | 用户与 key 管理、发码、校验验证码、登出。在中间件内直接响应，不转发给上游 |
+| 登录页 / 管理页 | `loginpage.go`、`loginpage/` | `go:embed` 的页面。未登录的页面请求返回 401 登录页；`/authgate/` 在登录后返回管理页 |
+| `Core` | `core.go` | 进程内共享状态。每 5 秒检查用户文件修改时间，每分钟清理过期验证码和闲置限流桶 |
+| `store` | `internal/store` | 解析 `<key>:<user>` 文本，内存索引查找；以临时文件、fsync、rename 原子写回 |
+| `code` | `internal/code` | 内存中的一次性验证码、发送冷却和错误次数（最多 5 次） |
+| `token` | `internal/token` | 签发与校验 Cookie token `v1.<payload>.<HMAC>`。密钥来自 `authgate_secret`，未配置时读取或生成 `<用户文件>.secret` |
+| `ratelimit` | `internal/ratelimit` | 三条 IP 限流：`code/send` 10 次/分钟、`code/valid` 30 次/分钟、无效 Bearer 60 次/分钟 |
+| `mailer` | `internal/mailer` | 把验证码以 JSON POST 到 `authgate_sendcode_url`，超时 10 秒 |
+| `keygen` | `internal/keygen` | 生成 `sk-` + 时间戳 + 随机数，并从标准 key 中解析创建时间 |
+
+`internal/` 不依赖 Caddy。根包负责模块注册（`module.go`）、Caddyfile 解析（`caddyfile.go`）和 HTTP 适配。
+
+### 请求管线
+
+业务请求与内置接口走不同的出口：`/authgate` 在插件内结束；`bypass` 与认证通过的请求交给链上的下一个处理器。
+
+```mermaid
+flowchart TD
+  req["请求进入 ServeHTTP"]
+  strip["删除客户端带来的 X-Auth-User、X-Is-Admin、X-Auth-Method"]
+  route{"路径"}
+  builtin["/authgate 接口或页面<br/>按接口要求做登录、管理员与 CSRF 校验"]
+  auth["提取凭证"]
+  result{"结果"}
+  limited["429 rate_limited"]
+  inject["写入身份 header<br/>默认再去掉 Authorization 与 AuthGate Cookie"]
+  next["下一个处理器"]
+  shape{"未认证时的响应"}
+  login["401 登录页"]
+  json["401 JSON"]
+
+  req --> strip --> route
+  route -->|"/authgate 或 /authgate/*"| builtin
+  route -->|"命中 bypass"| next
+  route -->|"其他"| auth --> result
+  result -->|"无效 Bearer 过多"| limited
+  result -->|"通过"| inject --> next
+  result -->|"未通过"| shape
+  shape -->|"页面访问"| login
+  shape -->|"接口调用"| json
+```
+
+凭证怎么取、什么时候返回登录页，见[模式判定](#模式判定)。验证码登录的交互见[Web 登录流程](#web-登录流程)。
+
+---
+
 ## 快速开始
 
 ### 1. 获取二进制
@@ -484,7 +584,7 @@ curl -X POST "$BASE/logout"
 └── .github/workflows/   CI 与发布
 ```
 
-`internal/` 下各包不依赖 Caddy，可独立测试；根包测试会在进程内启动真实的 Caddy 并覆盖验收用例。
+`internal/` 下各包不依赖 Caddy，可独立测试；根包测试会在进程内启动真实的 Caddy 并覆盖验收用例。运行时各部分如何协作见[架构](#架构)。
 
 ### 常用命令
 
