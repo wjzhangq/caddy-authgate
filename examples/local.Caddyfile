@@ -1,0 +1,26 @@
+# 本机试用：登录后浏览 /Users/wj/Downloads/tmp
+#
+# 终端 1，模拟发码服务（验证码打印在这个终端，不会真的发邮件）：
+#   go run ./scripts/mocksend -addr 127.0.0.1:9999
+#
+# 终端 2，使用带 authgate 模块的 Caddy：
+#   caddy run --config examples/local.Caddyfile
+#
+# 浏览器打开 http://localhost:8080
+# 用户名填 alice，验证码看终端 1。登录后即可列出该目录。
+# 管理页：http://localhost:8080/authgate/
+
+{
+	# 用户文件和自动生成的 .secret 不要放进下面 file_server 的目录，否则登录后能被下载。
+	authgate_file         /Users/wj/.config/caddy-authgate/users.txt
+	authgate_admin        alice
+	authgate_domain       example.com
+	authgate_sendcode_url http://127.0.0.1:9999/
+	# 不要设置 authgate_cookie_domain。设成 .example.com 时，浏览器不会把 Cookie 带到 localhost。
+}
+
+http://localhost:8080 {
+	authgate
+	root * /Users/wj/Downloads/tmp
+	file_server browse
+}

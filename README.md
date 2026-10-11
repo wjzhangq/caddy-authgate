@@ -281,6 +281,32 @@ portal.example.com {
 
 完整示例见 [`examples/Caddyfile`](examples/Caddyfile)。
 
+**本机目录：登录后用浏览器打开一个文件夹**
+
+下面这份配置监听 `http://localhost:8080`，认证通过后用 `file_server` 列出 `/Users/wj/Downloads/tmp`。验证码不走真实邮箱，由仓库里的模拟发码服务打印到终端。用户文件放在被浏览的目录之外，避免登录后把 key 下载走。这里不设置 `authgate_cookie_domain`，否则 Cookie 不会发到 `localhost`。地址写成 `http://`，避免 Caddy 对 `localhost` 自动启用 HTTPS。
+
+```caddyfile
+{
+	authgate_file         /Users/wj/.config/caddy-authgate/users.txt
+	authgate_admin        alice
+	authgate_domain       example.com
+	authgate_sendcode_url http://127.0.0.1:9999/
+}
+
+http://localhost:8080 {
+	authgate
+	root * /Users/wj/Downloads/tmp
+	file_server browse
+}
+```
+
+```bash
+go run ./scripts/mocksend -addr 127.0.0.1:9999
+caddy run --config examples/local.Caddyfile
+```
+
+浏览器打开 `http://localhost:8080`，用户名填 `alice`，验证码看 mocksend 那个终端。同一文件在 [`examples/local.Caddyfile`](examples/local.Caddyfile)。
+
 ### 发码服务
 
 AuthGate 不直接发邮件，而是调用 `authgate_sendcode_url`：
